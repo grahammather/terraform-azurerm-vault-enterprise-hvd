@@ -298,7 +298,7 @@ storage "raft" {
   autopilot_redundancy_zone = "zone-$AVAILABILITY_ZONE"
 
   retry_join {
-    auto_join             = "provider=azure subscription_id=$SUBSCRIPTION_ID resource_group=$RESOURCE_GROUP_NAME vm_scale_set=$SCALE_SET_NAME"
+    auto_join             = "provider=azure subscription_id=$SUBSCRIPTION_ID tag_name=vault-cluster tag_value=gmathervault"
     auto_join_scheme      = "https"
 %{ if vault_tls_ca_bundle_keyvault_secret_id != "NONE" ~}
     leader_ca_cert_file   = "$VAULT_DIR_TLS/ca.pem"
@@ -439,6 +439,25 @@ complete -C $VAULT_DIR_BIN/vault vault
 EOF
 }
 
+function tag_nic {
+  local VM_ID VM_NAME VM_RG NIC_ID
+  VM_ID=$(curl -sH Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceId?api-version=2021-02-01&format=text") || true
+  VM_NAME=$(curl -sH Metadata:true "http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text") || true
+  VM_RG=$(curl -sH Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text") || true
+  if [[ -z "$VM_NAME" || -z "$VM_RG" ]]; then
+    log "WARN" "Could not retrieve VM identity from IMDS; skipping NIC tagging."
+    return 0
+  fi
+  NIC_ID=$(az vm show -g "$VM_RG" -n "$VM_NAME" --query 'networkProfile.networkInterfaces[0].id' -o tsv 2>/dev/null) || true
+  if [[ -z "$NIC_ID" ]]; then
+    log "WARN" "Could not retrieve NIC ID for VM $VM_NAME; skipping NIC tagging."
+    return 0
+  fi
+  az tag update --resource-id "$NIC_ID" --operation merge --tags vault-cluster="${friendly_name_prefix}" \
+    && log "INFO" "NIC tagged successfully (NIC: $NIC_ID)." \
+    || log "WARN" "NIC tagging failed (non-fatal); continuing."
+}
+
 function exit_script {
   if [[ "$1" == 0 ]]; then
     log "INFO" "Vault custom_data script finished successfully!"
@@ -470,6 +489,9 @@ main() {
 
   log "INFO" "Running 'az login'."
   az login --identity
+
+  log "INFO" "Tagging VM NIC for Vault auto-join discovery"
+  tag_nic
 
   log "INFO" "Preparing Vault data disk"
   prepare_disk "lun0" "/opt/vault" "vault-data"

@@ -45,6 +45,7 @@ locals {
     vault_plugin_urls                        = var.vault_plugin_urls,
     vault_raft_performance_multiplier        = var.vault_raft_performance_multiplier
     vm_domain_suffix     = var.vm_domain_suffix != null ? var.vm_domain_suffix : "NONE"
+    friendly_name_prefix = var.friendly_name_prefix
   }
 }
 
@@ -53,36 +54,36 @@ locals {
 #------------------------------------------------------------------------------
 # Virtual Machine Scale Set (VMSS)
 #------------------------------------------------------------------------------
-resource "azurerm_linux_virtual_machine_scale_set" "vault" {
-  name                = "${var.friendly_name_prefix}-vault-vmss"
-  resource_group_name = local.resource_group_name
-  location            = var.location
-  instances           = var.vmss_vm_count
-  sku                 = var.vm_sku
-  admin_username      = var.vm_admin_username
-  overprovision       = false
-  upgrade_mode        = "Manual"
-  zone_balance        = true
-  zones               = var.availability_zones
-  # health_probe_id     = var.create_lb == true ? azurerm_lb_probe.vault[0].id : null
-
-  custom_data = base64encode(templatefile("${local.custom_startup_script_template}", local.custom_data_args))
-
-  scale_in {
-    rule = "OldestVM"
-  }
+resource "azurerm_orchestrated_virtual_machine_scale_set" "vault" {
+  name                        = "${var.friendly_name_prefix}-vault-vmss"
+  resource_group_name         = local.resource_group_name
+  location                    = var.location
+  instances                   = var.vmss_vm_count
+  sku_name                    = var.vm_sku
+  platform_fault_domain_count = 1
+  zone_balance                = true
+  zones                       = var.availability_zones
 
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.vault.id]
   }
 
-  dynamic "admin_ssh_key" {
-    for_each = var.vm_ssh_public_key != null ? [1] : []
+  os_profile {
+    custom_data = base64encode(templatefile("${local.custom_startup_script_template}", local.custom_data_args))
 
-    content {
-      username   = var.vm_admin_username
-      public_key = var.vm_ssh_public_key
+    linux_configuration {
+      admin_username                  = var.vm_admin_username
+      disable_password_authentication = true
+
+      dynamic "admin_ssh_key" {
+        for_each = var.vm_ssh_public_key != null ? [1] : []
+
+        content {
+          username   = var.vm_admin_username
+          public_key = var.vm_ssh_public_key
+        }
+      }
     }
   }
 
@@ -145,7 +146,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "vault" {
 }
 
 data "azurerm_virtual_machine_scale_set" "vault" {
-  name                = azurerm_linux_virtual_machine_scale_set.vault.name
+  name                = azurerm_orchestrated_virtual_machine_scale_set.vault.name
   resource_group_name = local.resource_group_name
 }
 
